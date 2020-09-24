@@ -1,0 +1,88 @@
+#!/usr/bin/env python
+import j1939
+import time
+import logging
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger('ds18b20_to_n2kbus')
+
+from w1thermsensor import W1ThermSensor
+from w1thermsensor.errors import NoSensorFoundError
+import argparse
+import sys
+
+from n2kclient import TemperatureMessage
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Continually poll temperature sensors and log to NMEA Bus.')
+
+    parser.add_argument('--delay', metavar='SECONDS', type=int,
+                        help='an integer for the accumulator', default=1)
+
+    parser.add_argument('--logging',
+                        metavar='log_level',
+                        type=str,
+                        help='Name of log level',
+                        default='info',
+                        choices=[
+                            'critical',
+                            'fatal',
+                            'error',
+                            'warn',
+                            'warning',
+                            'info',
+                            'debug',
+                        ])
+
+    parser.add_argument('sensors', metavar='SensorID=SID,Source', type=str, nargs='+',
+                        help='an integer for the accumulator')
+
+    args = parser.parse_args()
+    level = logging._nameToLevel[args.logging.upper()]
+    logging.getLogger().setLevel(level)
+    logging.getLogger('can').setLevel(level)
+    logging.getLogger('j1939').setLevel(level)
+
+    devices = []
+    for arg in args.sensors:
+        device = {
+        }
+        sensor_id, _, st = arg.partition("=")
+        sid, _, temperature_source = st.partition(",")
+        sid = int(sid)
+        assert (sid < 255)
+        assert (sid >= 0)
+        temperature_source = int(temperature_source)
+        assert temperature_source in TemperatureMessage.TS_DESCRIPTIONS
+        device['arguments'] = {'sid': sid, 'temperature_source': temperature_source}
+
+        try:
+            device['sensor'] = W1ThermSensor(sensor_id=sensor_id)
+        except NoSensorFoundError:
+            logger.error("Sensor: %s not found" % sensor_id)
+            continue
+
+        device['sensor_id'] = sensor_id
+        devices.append(device)
+
+    if len(devices) < 1:
+        logger.critical("No sensors defined. Exiting")
+        sys.exit(-1)
+    try:
+        bus = j1939.Bus(channel='can0', bustype='socketcan', timeout=0.01, broadcast=False)
+    except OSError:
+        logger.critical("No can device found")
+        sys.exit(-2)
+
+    while True:
+        for device in devices:
+            sensor = device['sensor']
+            if not sensor.exists():
+                continue
+
+            temperature = sensor.get_temperature(unit=W1ThermSensor.KELVIN)
+            logger.info("Temperature for device: %s is %s Kelvin" % (device['sensor_id'], temperature))
+
+            p = TemperatureMessage(temperature_k=temperature, **device['arguments'])
+            bus.send(p.to_can())
+
+        time.sleep(args.delay)

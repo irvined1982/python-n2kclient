@@ -1,0 +1,4 @@
+python-can
+git+https://github.com/milhead2/python-j1939.git
+bitstring
+w1thermsensor
